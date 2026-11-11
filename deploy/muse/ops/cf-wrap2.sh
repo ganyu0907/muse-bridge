@@ -8,6 +8,9 @@
 # 经环境变量 TUNNEL_TOKEN 交给 cloudflared，不出现在进程参数里）。quick 模式每起一个进程就是一条新临时隧道，
 # 没有「同一条隧道」的说法，所以 muse-tunnel-2 的单元里有 ExecCondition 只在 named 时启动；这里再兜一层：
 # 不是 named 就说明原因、挂住不动（不退出，免得 systemd 反复拉起刷状态）。
+#
+# --metrics 把就绪信号口钉死在 127.0.0.1:20242（主隧道是 20241，见 cf-wrap.sh），
+# bridge-sentinel / bridge-probe 按固定口直查 /ready（见 muse-env-lib.sh 的 connector_ready_connections）。
 set -e
 DIR="$(dirname "$(readlink -f "$0")")"
 set -a
@@ -24,6 +27,6 @@ set +a
 if [ -f "$DIR/muse-env-lib.sh" ]; then . "$DIR/muse-env-lib.sh"; restore_cloudflared "$CLOUDFLARED" "$OPS/cloudflared" || true; fi
 exec unshare --mount --propagation private bash -c '
 mount --bind "$OPS/hosts" /etc/hosts
-common=(--no-autoupdate --protocol http2 --edge "region2.v2.argotunnel.com:7845")
+common=(--no-autoupdate --protocol http2 --edge "region2.v2.argotunnel.com:7845" --metrics 127.0.0.1:20242)
 exec setpriv --reuid="$SVC_USER" --regid="$SVC_USER" --clear-groups "$CLOUDFLARED" tunnel "${common[@]}" run
 '

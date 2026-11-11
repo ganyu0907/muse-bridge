@@ -68,15 +68,24 @@ restore_cloudflared() { # $1 = CLOUDFLARED  $2 = 副本路径；$1 还能执行 
 }
 
 # connector_ready_connections <unit>：读某个隧道 unit 的 cloudflared 在 metrics 口上的 /ready，
-# 输出已注册的连接数；进程不在、metrics 口找不到或 /ready 不通时输出 -1。
+# 输出已注册的连接数；进程不在、/ready 不通或 unit 不认识时输出 -1。
 # 判定口径与服务端 public-access 一致：只认 cloudflared 自己的 /ready（回环口），不认本机经公网探自己。
-# 给 bridge-sentinel.sh（巡查）与 bridge-probe.sh（采样）共用；要 root 才能从 ss 看到别人的 pid，本组件都以 root 跑。
+# 给 bridge-sentinel.sh（巡查）与 bridge-probe.sh（采样）共用。
+#
+# metrics 口由 cf-wrap.sh（主隧道 20241）/ cf-wrap2.sh（第二隧道 20242）用 --metrics 钉死，这里按 unit 直查固定口。
+# 不要改回「拿 MainPID 去 ss 里找监听口」：旧实现就是这样翻的车——真机上 cloudflared 跑在私有 mount namespace
+# 里，这个监听在 ss 输出里没有属主标注（pid 列为空），按 pid 找口恒落空、恒输出 -1，2026-11-11 哨兵因此把
+# 两条健康连接器误判为「进程在、连接没了」轮流误重启，探针 conn1/conn2 两列也同根恒为 -1。
+# cloudflared 不传 --metrics 时在 20241–20245 里顺延绑定、占满后随机选口，同样没法猜口直查——口必须由 wrap 钉死。
 connector_ready_connections() {
   local unit="$1" pid port body n
   pid="$(systemctl show -p MainPID --value "$unit" 2>/dev/null || echo 0)"
   [ -n "$pid" ] && [ "$pid" != "0" ] || { echo -1; return 0; }
-  port="$(ss -tlnp 2>/dev/null | grep "pid=$pid," | grep -oE '127\.0\.0\.1:202[0-9]{2}' | head -1 | cut -d: -f2)"
-  [ -n "$port" ] || { echo -1; return 0; }
+  case "$unit" in
+    muse-tunnel)   port=20241 ;;
+    muse-tunnel-2) port=20242 ;;
+    *) echo -1; return 0 ;;
+  esac
   body="$(curl -s --max-time 2 "http://127.0.0.1:$port/ready" 2>/dev/null)" || { echo -1; return 0; }
   n="$(printf '%s' "$body" | grep -oE '"readyConnections": *[0-9]+' | grep -oE '[0-9]+$' || true)"
   [ -n "$n" ] && echo "$n" || echo -1
