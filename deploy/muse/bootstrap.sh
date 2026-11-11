@@ -54,7 +54,11 @@ SVC_USER=bridge
 PROXY="${MUSE_PROXY:-http://hatch-egress-proxy:3128}"
 EDGE=region1.v2.argotunnel.com
 # 这个版本的内置服务。运维者在 muse.env 的 SERVICES 里追加的自有服务，回写时接在后面保留（ops/muse-env-lib.sh）
-SERVICES="bridge cf-relay-api cf-relay-edge muse-tunnel"
+# cf-relay-edge2 / muse-tunnel-2 / bridge-sentinel 是自家版的第一期加固（双连接器冗余）：第二条连接走 region2 的
+# 独立中继跑同一条命名隧道，哨兵在本地巡查两条连接与两条中继、坏哪条修哪条。详见 ops/bridge-sentinel.sh。
+# bridge-probe / bridge-recorder 是同一批的记录组件（只记不动手）：探针每分钟往持久区账本采一笔，
+# 收集服务把相关 unit 的 journal 事件实时存进持久区——这台 VM 的 journal 在临时盘、平台重启就清零，全靠它们留证。
+SERVICES="bridge cf-relay-api cf-relay-edge cf-relay-edge2 muse-tunnel muse-tunnel-2 bridge-sentinel bridge-probe bridge-recorder"
 # 以后去掉某个内置服务时写在这里，回写 muse.env 时从 SERVICES 里拿掉它（否则会被当成自有服务留下）
 SERVICES_RETIRED=""
 HOOK_DIR="$PERSIST/hooks/scripts"
@@ -465,11 +469,15 @@ switch_to() {
 
 # 隧道单元：隧道通着就不重启——快速隧道一重启就换地址，单元内容的改动等它下次自然重启（VM 重启 / 掉线）再生效；
 # force = 一定重启（换了隧道模式、换了令牌）。两条中继可以随时重启：cloudflared 会重连，地址不变。
+# 自家版加固的三个单元也在这里一并渲染 / 启用：第二中继 cf-relay-edge2 同中继的规矩（变了就重启）；
+# 第二连接器 muse-tunnel-2 单元变了就重启（重启期间第一连接器在服务，用户不可见），且只在 named 模式真起
+# （单元里有 ExecCondition，quick 模式下 start 会被直接跳过）；本地哨兵 bridge-sentinel 与记录组件
+# bridge-probe / bridge-recorder 同样变了就重启、没变就确保在跑。
 apply_tunnel() {
   local force="${1:-}" tunnel_ok=0 s changed=""
   [ "$(public_code)" = 200 ] && tunnel_ok=1
   install -d -m 0770 "$OPS/systemd"
-  for s in cf-relay-api cf-relay-edge muse-tunnel; do
+  for s in cf-relay-api cf-relay-edge cf-relay-edge2 muse-tunnel muse-tunnel-2 bridge-sentinel bridge-probe bridge-recorder; do
     render "$HERE/ops/systemd/$s.service" > "$OPS/systemd/$s.service"
     cmp -s "$OPS/systemd/$s.service" "/etc/systemd/system/$s.service" || { cp "$OPS/systemd/$s.service" "/etc/systemd/system/$s.service"; changed+=" $s"; }
   done
@@ -481,13 +489,17 @@ apply_tunnel() {
     force=force
   fi
   systemctl daemon-reload
-  for s in cf-relay-api cf-relay-edge muse-tunnel; do systemctl enable "$s.service" >/dev/null 2>&1; done
-  for s in cf-relay-api cf-relay-edge; do
+  for s in cf-relay-api cf-relay-edge cf-relay-edge2 muse-tunnel muse-tunnel-2 bridge-sentinel bridge-probe bridge-recorder; do systemctl enable "$s.service" >/dev/null 2>&1; done
+  for s in cf-relay-api cf-relay-edge cf-relay-edge2; do
     case "$changed " in *" $s "*) systemctl restart "$s.service" ;; *) systemctl start "$s.service" ;; esac
   done
   if [ -n "$force" ] || [ "$tunnel_ok" = 0 ]; then systemctl reset-failed muse-tunnel.service 2>/dev/null || true; systemctl restart muse-tunnel.service
   else systemctl start muse-tunnel.service
   fi
+  case "$changed " in *" muse-tunnel-2 "*) systemctl reset-failed muse-tunnel-2.service 2>/dev/null || true; systemctl restart muse-tunnel-2.service ;; *) systemctl start muse-tunnel-2.service || true ;; esac
+  case "$changed " in *" bridge-sentinel "*) systemctl restart bridge-sentinel.service ;; *) systemctl start bridge-sentinel.service || true ;; esac
+  case "$changed " in *" bridge-probe "*) systemctl restart bridge-probe.service ;; *) systemctl start bridge-probe.service || true ;; esac
+  case "$changed " in *" bridge-recorder "*) systemctl restart bridge-recorder.service ;; *) systemctl start bridge-recorder.service || true ;; esac
 }
 
 wait_public() {
@@ -636,6 +648,10 @@ cmd_install() {
   say "装隧道与运维件到 $OPS"
   write_muse_env
   install -m 0770 "$HERE/ops/cf-wrap.sh" "$OPS/cf-wrap.sh"
+  install -m 0770 "$HERE/ops/cf-wrap2.sh" "$OPS/cf-wrap2.sh"   # 第二连接器（region2 路径）的启动包装，muse-tunnel-2 用
+  install -m 0770 "$HERE/ops/bridge-sentinel.sh" "$OPS/bridge-sentinel.sh"   # 本地哨兵：巡查双连接器与双中继
+  install -m 0770 "$HERE/ops/bridge-probe.sh" "$OPS/bridge-probe.sh"   # 可用性探针：每分钟一笔写持久区账本
+  install -m 0770 "$HERE/ops/bridge-recorder.sh" "$OPS/bridge-recorder.sh"   # 事件收集：把相关 unit 的 journal 实时存进持久区
   install -m 0770 "$HERE/ops/heal.sh" "$OPS/heal.sh"
   install -m 0770 "$HERE/ops/muse-env-lib.sh" "$OPS/muse-env-lib.sh"   # heal.sh / cf-wrap.sh 补回 cloudflared 要用
   keep_cloudflared "$(prev CLOUDFLARED)" "$OPS/cloudflared" || true   # 刚写进 muse.env 的路径；存持久副本，VM 重启清掉原件时靠它补回（#9）

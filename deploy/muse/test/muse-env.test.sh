@@ -16,7 +16,7 @@ has() { # $1 = 说明  $2 = 实际  $3 = 应包含的片段
   case "$2" in *"$3"*) pass=$((pass + 1)) ;; *) fail=$((fail + 1)); printf 'FAIL %s\n  实际：%s\n  应包含：%s\n' "$1" "$2" "$3" ;; esac
 }
 
-B="bridge cf-relay-api cf-relay-edge muse-tunnel"
+B="bridge cf-relay-api cf-relay-edge cf-relay-edge2 muse-tunnel muse-tunnel-2 bridge-sentinel bridge-probe bridge-recorder"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
 # —— merge_services ——
@@ -27,7 +27,7 @@ eq "自有服务保持原顺序" "$(merge_services "$B" "bridge my-b cf-relay-ap
 eq "去重" "$(merge_services "$B" "$B x x bridge")" "$B x"
 eq "新版本新增的内置服务不会被旧清单漏掉" "$(merge_services "$B new-builtin" "$B claude-relay")" "$B new-builtin claude-relay"
 eq "人工删掉的内置服务回来（内置的总在）" "$(merge_services "$B" "bridge muse-tunnel")" "$B"
-eq "退役的内置服务不当成自有服务留下" "$(merge_services "bridge muse-tunnel" "$B mine" "cf-relay-api cf-relay-edge")" "bridge muse-tunnel mine"
+eq "退役的内置服务不当成自有服务留下" "$(merge_services "bridge muse-tunnel" "$B mine" "cf-relay-api cf-relay-edge cf-relay-edge2 muse-tunnel-2 bridge-sentinel bridge-probe bridge-recorder")" "bridge muse-tunnel mine"
 eq "不合法的名字丢掉" "$(merge_services "$B" 'ok.service $(touch /tmp/x) a;b *')" "$B ok.service"
 eq "多余空白" "$(merge_services "$B" "  bridge    extra  ")" "$B extra"
 
@@ -47,7 +47,7 @@ eq "新装不提示" "$(env_change_note SERVICES "" "$B")" ""
 eq "没变不提示" "$(env_change_note SERVICES "$B x" "$B x")" ""
 has "新增内置服务时提示" "$(env_change_note SERVICES "$B" "$B y")" "新增：y"
 has "去掉时提示" "$(env_change_note SERVICES "$B bad;name" "$B")" "去掉：bad;name"
-has "只是顺序变了也提示" "$(env_change_note SERVICES "muse-tunnel bridge cf-relay-api cf-relay-edge" "$B")" "顺序"
+has "只是顺序变了也提示" "$(env_change_note SERVICES "bridge-recorder bridge-probe bridge-sentinel muse-tunnel-2 muse-tunnel cf-relay-edge2 cf-relay-edge cf-relay-api bridge" "$B")" "顺序"
 has "CLOUDFLARED 变了提示新旧路径" "$(env_change_note CLOUDFLARED "/old/cf" "/usr/bin/cloudflared")" "/old/cf 已经不存在或不能执行，改用 /usr/bin/cloudflared"
 eq "CLOUDFLARED 没变不提示" "$(env_change_note CLOUDFLARED "/usr/bin/cloudflared" "/usr/bin/cloudflared")" ""
 

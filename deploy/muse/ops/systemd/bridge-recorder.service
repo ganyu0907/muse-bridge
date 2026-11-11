@@ -1,0 +1,12 @@
+[Unit]
+Description=Bridge event recorder (follows tunnel / relay / sentinel / bridge journals into a persistent event log)
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=@OPS@/bridge-recorder.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,13 @@
+[Unit]
+Description=Bridge uptime probe (one ledger line per minute, on the persistent volume)
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=@OPS@/bridge-probe.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
