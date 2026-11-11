@@ -9,6 +9,10 @@
 #   quick —— trycloudflare 临时地址（不用账号；VM 重启就换地址）
 #   named —— 用户自己域名的命名隧道：令牌在 bridge-ops/tunnel.env（0600），经环境变量 TUNNEL_TOKEN 交给 cloudflared，
 #            不出现在进程参数里。路由（主机名 → http://localhost:8787）在用户的 Cloudflare 后台配好。
+#
+# --metrics 把就绪信号口钉死在 127.0.0.1:20241：bridge-sentinel / bridge-probe 按固定口直查 /ready
+# （见 muse-env-lib.sh 的 connector_ready_connections）。不钉时 cloudflared 在 20241–20245 里顺延绑定、
+# 占满后随机选口，没人能稳定直查；namespace 只隔离 mount，这个口仍在主机回环上，root 巡查得到。
 set -e
 DIR="$(dirname "$(readlink -f "$0")")"
 set -a
@@ -24,7 +28,7 @@ if [ "${TUNNEL_MODE:-quick}" != named ] && [ -n "${PROXY:-}" ]; then
 fi
 exec unshare --mount --propagation private bash -c '
 mount --bind "$OPS/hosts" /etc/hosts
-common=(--no-autoupdate --protocol http2 --edge "$EDGE:7844")
+common=(--no-autoupdate --protocol http2 --edge "$EDGE:7844" --metrics 127.0.0.1:20241)
 if [ "${TUNNEL_MODE:-quick}" = named ]; then
   exec setpriv --reuid="$SVC_USER" --regid="$SVC_USER" --clear-groups "$CLOUDFLARED" tunnel "${common[@]}" run
 else

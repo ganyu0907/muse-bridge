@@ -130,5 +130,67 @@ has "bootstrap 下载前先试副本" "$(cat "$BOOT")" 'restore_cloudflared "$(p
 has "heal.sh 补回" "$(cat "$MUSE/ops/heal.sh")" 'restore_cloudflared "$CLOUDFLARED" "$OPS/cloudflared"'
 has "cf-wrap.sh 启动前补回" "$(cat "$MUSE/ops/cf-wrap.sh")" 'restore_cloudflared "$CLOUDFLARED" "$OPS/cloudflared"'
 
+# —— connector_ready_connections：按固定 metrics 口直查 /ready（2026-11-11 哨兵误判的回归）——
+# 桩件钉在 $STUB 里顶掉真命令：假 systemctl（MainPID 由 FAKE_MAINPID 控制）、假 curl（按口返回
+# FAKE_READY_<口> 的内容，值 FAIL = 连接失败；每次调用把 URL 记进 FAKE_CURL_LOG 好核对查的是哪个口）、
+# 假 ss（FAKE_SS=real 时是真机形态：metrics 监听行没有进程属主标注；=empty 时干脆什么都不输出）。
+# 旧实现拿 MainPID 去 ss 里找口，在这两种 ss 下都恒落空、恒 -1；新实现不看 ss，按 unit 直查固定口。
+STUB="$TMP/stub"; mkdir -p "$STUB"
+cat > "$STUB/systemctl" <<'EOF'
+#!/bin/bash
+echo "${FAKE_MAINPID:-4242}"
+EOF
+cat > "$STUB/curl" <<'EOF'
+#!/bin/bash
+url="${@: -1}"
+echo "$url" >> "$FAKE_CURL_LOG"
+port="$(printf '%s' "$url" | grep -oE ':[0-9]+/' | tr -d ':/')"
+eval "body=\$FAKE_READY_$port"
+[ "$body" = FAIL ] && exit 7
+printf '%s' "$body"
+EOF
+cat > "$STUB/ss" <<'EOF'
+#!/bin/bash
+[ "${FAKE_SS:-real}" = empty ] && exit 0
+ cat <<'OUT'
+State  Recv-Q Send-Q Local Address:Port  Peer Address:Port Process
+LISTEN 0      4096       127.0.0.1:20241      0.0.0.0:*
+LISTEN 0      4096       127.0.0.1:20242      0.0.0.0:*
+OUT
+EOF
+chmod +x "$STUB/systemctl" "$STUB/curl" "$STUB/ss"
+ready() { # $1 = unit；结果留在 $READY_OUT，这轮查过的 URL 留在 $READY_URLS
+  export FAKE_CURL_LOG="$TMP/curl.log"; : > "$FAKE_CURL_LOG"
+  READY_OUT="$( ( export PATH="$STUB:/usr/bin:/bin"; connector_ready_connections "$1" ) )"
+  READY_URLS="$(cat "$FAKE_CURL_LOG")"
+}
+export FAKE_SS=real FAKE_MAINPID=4242
+export FAKE_READY_20241='{"readyConnections": 1}' FAKE_READY_20242='{"readyConnections": 2}'
+ready muse-tunnel
+eq "主隧道：读固定口的 readyConnections" "$READY_OUT" "1"
+eq "主隧道：查的就是 20241" "$READY_URLS" "http://127.0.0.1:20241/ready"
+ready muse-tunnel-2
+eq "第二隧道：读固定口的 readyConnections" "$READY_OUT" "2"
+eq "第二隧道：查的就是 20242（不串口）" "$READY_URLS" "http://127.0.0.1:20242/ready"
+eq "真机形态 ss（监听无属主标注）在场：结果不受它影响" "$READY_OUT" "2"
+export FAKE_SS=empty
+ready muse-tunnel
+eq "ss 干脆没输出：照样读到固定口的连接数" "$READY_OUT" "1"
+export FAKE_SS=real FAKE_READY_20241='{"readyConnections": 0}'
+ready muse-tunnel
+eq "readyConnections 为 0：如实输出 0（进程在、连接没了），不许说成 -1" "$READY_OUT" "0"
+export FAKE_READY_20241=FAIL
+ready muse-tunnel
+eq "/ready 不通：-1" "$READY_OUT" "-1"
+export FAKE_READY_20241='{"readyConnections": 1}' FAKE_MAINPID=0
+ready muse-tunnel
+eq "进程不在（MainPID=0）：-1" "$READY_OUT" "-1"
+export FAKE_MAINPID=4242
+ready no-such-unit
+eq "不认识的 unit：-1" "$READY_OUT" "-1"
+# 两个 wrap 把 metrics 口钉死，函数才有固定口可查
+has "cf-wrap.sh 钉死 metrics 口 20241" "$(cat "$MUSE/ops/cf-wrap.sh")" '--metrics 127.0.0.1:20241'
+has "cf-wrap2.sh 钉死 metrics 口 20242" "$(cat "$MUSE/ops/cf-wrap2.sh")" '--metrics 127.0.0.1:20242'
+
 printf '%d 通过，%d 失败\n' "$pass" "$fail"
 [ "$fail" = 0 ]
