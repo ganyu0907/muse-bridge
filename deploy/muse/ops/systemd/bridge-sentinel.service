@@ -1,0 +1,12 @@
+[Unit]
+Description=Bridge tunnel sentinel (watches both tunnel connectors and both edge relays every 10s, restarts only the broken one)
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=@OPS@/bridge-sentinel.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

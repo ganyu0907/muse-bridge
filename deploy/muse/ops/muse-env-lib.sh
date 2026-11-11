@@ -66,3 +66,18 @@ restore_cloudflared() { # $1 = CLOUDFLARED  $2 = 副本路径；$1 还能执行 
   rm -f "$1"   # 可能是指向已被清掉的文件的断链
   install -D -m 0755 "$2" "$1" && printf '已从 %s 补回 %s\n' "$2" "$1"
 }
+
+# connector_ready_connections <unit>：读某个隧道 unit 的 cloudflared 在 metrics 口上的 /ready，
+# 输出已注册的连接数；进程不在、metrics 口找不到或 /ready 不通时输出 -1。
+# 判定口径与服务端 public-access 一致：只认 cloudflared 自己的 /ready（回环口），不认本机经公网探自己。
+# 给 bridge-sentinel.sh（巡查）与 bridge-probe.sh（采样）共用；要 root 才能从 ss 看到别人的 pid，本组件都以 root 跑。
+connector_ready_connections() {
+  local unit="$1" pid port body n
+  pid="$(systemctl show -p MainPID --value "$unit" 2>/dev/null || echo 0)"
+  [ -n "$pid" ] && [ "$pid" != "0" ] || { echo -1; return 0; }
+  port="$(ss -tlnp 2>/dev/null | grep "pid=$pid," | grep -oE '127\.0\.0\.1:202[0-9]{2}' | head -1 | cut -d: -f2)"
+  [ -n "$port" ] || { echo -1; return 0; }
+  body="$(curl -s --max-time 2 "http://127.0.0.1:$port/ready" 2>/dev/null)" || { echo -1; return 0; }
+  n="$(printf '%s' "$body" | grep -oE '"readyConnections": *[0-9]+' | grep -oE '[0-9]+$' || true)"
+  [ -n "$n" ] && echo "$n" || echo -1
+}

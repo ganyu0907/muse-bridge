@@ -1,0 +1,12 @@
+[Unit]
+Description=socat relay 127.0.0.1:7845 -> egress proxy -> region2.v2.argotunnel.com:7844 (cloudflared tunnel data, path 2)
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=/usr/bin/socat TCP-LISTEN:7845,bind=127.0.0.1,fork,reuseaddr PROXY:@PROXY_HOST@:region2.v2.argotunnel.com:7844,proxyport=@PROXY_PORT@
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

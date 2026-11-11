@@ -1,0 +1,15 @@
+[Unit]
+Description=Muse Bridge public tunnel replica (cloudflared via cf-wrap2.sh: region2 path, same named tunnel; named mode only)
+After=network.target cf-relay-edge2.service
+StartLimitIntervalSec=0
+Requires=cf-relay-edge2.service
+
+[Service]
+ExecCondition=/bin/sh -c 'grep -q "^TUNNEL_MODE=named" "@OPS@/muse.env"'
+ExecStartPre=/bin/sleep 60
+ExecStart=@OPS@/cf-wrap2.sh
+Restart=always
+RestartSec=17
+
+[Install]
+WantedBy=multi-user.target
